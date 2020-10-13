@@ -39,6 +39,9 @@ func TestIngressDefaulting(t *testing.T) {
 		name: "split-timeout-and-visibility-defaulting",
 		in: &Ingress{
 			Spec: IngressSpec{
+				TLS: []IngressTLS{{
+					SecretName: "a-secret",
+				}},
 				Rules: []IngressRule{{
 					HTTP: &HTTPIngressRuleValue{
 						Paths: []HTTPIngressPath{{
@@ -56,6 +59,9 @@ func TestIngressDefaulting(t *testing.T) {
 		},
 		want: &Ingress{
 			Spec: IngressSpec{
+				TLS: []IngressTLS{{
+					SecretName: "a-secret",
+				}},
 				Rules: []IngressRule{{
 					Visibility: IngressVisibilityExternalIP,
 					HTTP: &HTTPIngressRuleValue{
@@ -137,7 +143,7 @@ func TestIngressDefaulting(t *testing.T) {
 			got := test.in
 			got.SetDefaults(context.Background())
 			if diff := cmp.Diff(test.want, got); diff != "" {
-				t.Errorf("SetDefaults (-want, +got) = %v", diff)
+				t.Error("SetDefaults (-want, +got) =", diff)
 			}
 		})
 	}

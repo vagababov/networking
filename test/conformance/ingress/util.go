@@ -44,6 +44,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -526,6 +527,8 @@ func CreateGRPCService(ctx context.Context, t *testing.T, clients *test.Clients,
 func createService(ctx context.Context, t *testing.T, clients *test.Clients, svc *corev1.Service) context.CancelFunc {
 	t.Helper()
 
+	svcName := ktypes.NamespacedName{Name: svc.Name, Namespace: svc.Namespace}
+
 	t.Cleanup(func() {
 		clients.KubeClient.Kube.CoreV1().Services(svc.Namespace).Delete(ctx, svc.Name, metav1.DeleteOptions{})
 	})
@@ -533,13 +536,13 @@ func createService(ctx context.Context, t *testing.T, clients *test.Clients, svc
 		_, err := clients.KubeClient.Kube.CoreV1().Services(svc.Namespace).Create(ctx, svc, metav1.CreateOptions{})
 		return err
 	}); err != nil {
-		t.Fatal("Error creating Service:", err)
+		t.Fatalf("Error creating Service %q: %v", svcName, err)
 	}
 
 	return func() {
 		err := clients.KubeClient.Kube.CoreV1().Services(svc.Namespace).Delete(ctx, svc.Name, metav1.DeleteOptions{})
 		if err != nil {
-			t.Errorf("Error cleaning up Service %s: %v", svc.Name, err)
+			t.Errorf("Error cleaning up Service %q: %v", svcName, err)
 		}
 	}
 }
@@ -571,6 +574,9 @@ func createExternalNameService(ctx context.Context, t *testing.T, clients *test.
 func createPodAndService(ctx context.Context, t *testing.T, clients *test.Clients, pod *corev1.Pod, svc *corev1.Service) context.CancelFunc {
 	t.Helper()
 
+	podName := ktypes.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}
+	svcName := ktypes.NamespacedName{Name: svc.Name, Namespace: svc.Namespace}
+
 	t.Cleanup(func() {
 		clients.KubeClient.Kube.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
 	})
@@ -578,7 +584,7 @@ func createPodAndService(ctx context.Context, t *testing.T, clients *test.Client
 		_, err := clients.KubeClient.Kube.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 		return err
 	}); err != nil {
-		t.Fatal("Error creating Pod:", err)
+		t.Fatalf("Error creating Pod %q: %v", podName, err)
 	}
 
 	t.Cleanup(func() {
@@ -588,7 +594,7 @@ func createPodAndService(ctx context.Context, t *testing.T, clients *test.Client
 		_, err := clients.KubeClient.Kube.CoreV1().Services(svc.Namespace).Create(ctx, svc, metav1.CreateOptions{})
 		return err
 	}); err != nil {
-		t.Fatal("Error creating Service:", err)
+		t.Fatalf("Error creating Service %q: %v", svcName, err)
 	}
 
 	// Wait for the Pod to show up in the Endpoints resource.
@@ -612,33 +618,33 @@ func createPodAndService(ctx context.Context, t *testing.T, clients *test.Client
 		return len(ep.Subsets) > 0, nil
 	})
 	if waitErr != nil {
-		t.Fatal("Error waiting for Endpoints to contain a Pod IP:", waitErr)
+		t.Fatalf("Error waiting for %q Endpoints to contain a Pod IP: %v", svcName, waitErr)
 	}
 
 	return func() {
 		err := clients.KubeClient.Kube.CoreV1().Services(svc.Namespace).Delete(ctx, svc.Name, metav1.DeleteOptions{})
 		if err != nil {
-			t.Errorf("Error cleaning up Service %s: %v", svc.Name, err)
+			t.Errorf("Error cleaning up Service %q: %v", svcName, err)
 		}
 		err = clients.KubeClient.Kube.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
 		if err != nil {
-			t.Errorf("Error cleaning up Pod %s", pod.Name)
+			t.Errorf("Error cleaning up Pod %q", pod.Name)
 		}
 	}
 }
 
-// IngressOption enables further configuration of a Ingress.
-type IngressOption func(*v1alpha1.Ingress)
+// Option enables further configuration of a Ingress.
+type Option func(*v1alpha1.Ingress)
 
 // OverrideIngressAnnotation overrides the Ingress annotation.
-func OverrideIngressAnnotation(annotations map[string]string) IngressOption {
+func OverrideIngressAnnotation(annotations map[string]string) Option {
 	return func(ing *v1alpha1.Ingress) {
 		ing.Annotations = annotations
 	}
 }
 
-// CreateIngress creates a Knative Ingress resource
-func CreateIngress(ctx context.Context, t *testing.T, clients *test.Clients, spec v1alpha1.IngressSpec, io ...IngressOption) (*v1alpha1.Ingress, context.CancelFunc) {
+// createIngress creates a Knative Ingress resource
+func createIngress(ctx context.Context, t *testing.T, clients *test.Clients, spec v1alpha1.IngressSpec, io ...Option) (*v1alpha1.Ingress, context.CancelFunc) {
 	t.Helper()
 
 	name := test.ObjectNameForTest(t)
@@ -649,7 +655,7 @@ func CreateIngress(ctx context.Context, t *testing.T, clients *test.Clients, spe
 			Name:      name,
 			Namespace: test.ServingNamespace,
 			Annotations: map[string]string{
-				networking.IngressClassAnnotationKey: test.ServingFlags.IngressClass,
+				networking.IngressClassAnnotationKey: test.NetworkingFlags.IngressClass,
 			},
 		},
 		Spec: spec,
@@ -659,9 +665,11 @@ func CreateIngress(ctx context.Context, t *testing.T, clients *test.Clients, spe
 		opt(ing)
 	}
 
+	ingName := ktypes.NamespacedName{Name: ing.Name, Namespace: ing.Namespace}
+
 	ing.SetDefaults(context.Background())
 	if err := ing.Validate(context.Background()); err != nil {
-		t.Fatal("Invalid ingress:", err)
+		t.Fatalf("Invalid ingress %q: %v", ingName, err)
 	}
 
 	t.Cleanup(func() { clients.NetworkingClient.Ingresses.Delete(ctx, ing.Name, metav1.DeleteOptions{}) })
@@ -669,24 +677,26 @@ func CreateIngress(ctx context.Context, t *testing.T, clients *test.Clients, spe
 		ing, err = clients.NetworkingClient.Ingresses.Create(ctx, ing, metav1.CreateOptions{})
 		return err
 	}); err != nil {
-		t.Fatal("Error creating Ingress:", err)
+		t.Fatalf("Error creating Ingress %q: %v", ingName, err)
 	}
 
 	return ing, func() {
 		err := clients.NetworkingClient.Ingresses.Delete(ctx, ing.Name, metav1.DeleteOptions{})
 		if err != nil {
-			t.Errorf("Error cleaning up Ingress %s: %v", ing.Name, err)
+			t.Errorf("Error cleaning up Ingress %q: %v", ingName, err)
 		}
 	}
 }
 
-func CreateIngressReadyDialContext(ctx context.Context, t *testing.T, clients *test.Clients, spec v1alpha1.IngressSpec) (*v1alpha1.Ingress, func(context.Context, string, string) (net.Conn, error), context.CancelFunc) {
+func createIngressReadyDialContext(ctx context.Context, t *testing.T, clients *test.Clients, spec v1alpha1.IngressSpec) (*v1alpha1.Ingress, func(context.Context, string, string) (net.Conn, error), context.CancelFunc) {
 	t.Helper()
-	ing, cancel := CreateIngress(ctx, t, clients, spec)
+
+	ing, cancel := createIngress(ctx, t, clients, spec)
+	ingName := ktypes.NamespacedName{Name: ing.Name, Namespace: ing.Namespace}
 
 	if err := WaitForIngressState(ctx, clients.NetworkingClient, ing.Name, IsIngressReady, t.Name()); err != nil {
 		cancel()
-		t.Fatal("Error waiting for ingress state:", err)
+		t.Fatalf("Error waiting for ingress %q state: %v", ingName, err)
 	}
 	err := reconciler.RetryTestErrors(func(attempts int) (err error) {
 		ing, err = clients.NetworkingClient.Ingresses.Get(ctx, ing.Name, metav1.GetOptions{})
@@ -694,7 +704,7 @@ func CreateIngressReadyDialContext(ctx context.Context, t *testing.T, clients *t
 	})
 	if err != nil {
 		cancel()
-		t.Fatal("Error getting Ingress:", err)
+		t.Fatalf("Error getting Ingress %q: %v", ingName, err)
 	}
 
 	// Create a dialer based on the Ingress' public load balancer.
@@ -705,7 +715,7 @@ func CreateIngressReady(ctx context.Context, t *testing.T, clients *test.Clients
 	t.Helper()
 
 	// Create a client with a dialer based on the Ingress' public load balancer.
-	ing, dialer, cancel := CreateIngressReadyDialContext(ctx, t, clients, spec)
+	ing, dialer, cancel := createIngressReadyDialContext(ctx, t, clients, spec)
 
 	// TODO(mattmoor): How to get ing?
 	var tlsConfig *tls.Config
@@ -733,11 +743,10 @@ func UpdateIngress(ctx context.Context, t *testing.T, clients *test.Clients, nam
 
 	if err := reconciler.RetryTestErrors(func(attempts int) error {
 		var ing *v1alpha1.Ingress
-		err := reconciler.RetryTestErrors(func(attempts int) (err error) {
+		if err := reconciler.RetryTestErrors(func(attempts int) (err error) {
 			ing, err = clients.NetworkingClient.Ingresses.Get(ctx, name, metav1.GetOptions{})
 			return err
-		})
-		if err != nil {
+		}); err != nil {
 			return err
 		}
 
@@ -747,19 +756,20 @@ func UpdateIngress(ctx context.Context, t *testing.T, clients *test.Clients, nam
 			return err
 		}
 
-		_, err = clients.NetworkingClient.Ingresses.Update(ctx, ing, metav1.UpdateOptions{})
+		_, err := clients.NetworkingClient.Ingresses.Update(ctx, ing, metav1.UpdateOptions{})
 		return err
 	}); err != nil {
-		t.Fatal("Error fetching and updating Ingress:", err)
+		t.Fatalf("Error fetching and updating Ingress %q: %v", name, err)
 	}
 }
 
 func UpdateIngressReady(ctx context.Context, t *testing.T, clients *test.Clients, name string, spec v1alpha1.IngressSpec) {
 	t.Helper()
+
 	UpdateIngress(ctx, t, clients, name, spec)
 
 	if err := WaitForIngressState(ctx, clients.NetworkingClient, name, IsIngressReady, t.Name()); err != nil {
-		t.Fatal("Error waiting for ingress state:", err)
+		t.Fatalf("Error waiting for ingress %q state: %v", name, err)
 	}
 }
 
@@ -954,7 +964,7 @@ func RuntimeRequestWithExpectations(ctx context.Context, t *testing.T, client *h
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		t.Errorf("Error creating Request: %v", err)
+		t.Error("Error creating Request:", err)
 		return nil
 	}
 
@@ -966,7 +976,7 @@ func RuntimeRequestWithExpectations(ctx context.Context, t *testing.T, client *h
 
 	if err != nil {
 		if !allowDialError || !IsDialError(err) {
-			t.Errorf("Error making GET request: %v", err)
+			t.Error("Error making GET request:", err)
 		}
 		return nil
 	}
@@ -975,7 +985,7 @@ func RuntimeRequestWithExpectations(ctx context.Context, t *testing.T, client *h
 
 	for _, e := range responseExpectations {
 		if err := e(resp); err != nil {
-			t.Errorf("Error meeting response expectations: %v", err)
+			t.Error("Error meeting response expectations:", err)
 			DumpResponse(ctx, t, resp)
 			return nil
 		}
@@ -984,13 +994,13 @@ func RuntimeRequestWithExpectations(ctx context.Context, t *testing.T, client *h
 	if resp.StatusCode == http.StatusOK {
 		b, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			t.Errorf("Unable to read response body: %v", err)
+			t.Error("Unable to read response body:", err)
 			DumpResponse(ctx, t, resp)
 			return nil
 		}
 		ri := &types.RuntimeInfo{}
 		if err := json.Unmarshal(b, ri); err != nil {
-			t.Errorf("Unable to parse runtime image's response payload: %v", err)
+			t.Error("Unable to parse runtime image's response payload:", err)
 			return nil
 		}
 		return ri
@@ -1002,7 +1012,7 @@ func DumpResponse(ctx context.Context, t *testing.T, resp *http.Response) {
 	t.Helper()
 	b, err := httputil.DumpResponse(resp, true)
 	if err != nil {
-		t.Errorf("Error dumping response: %v", err)
+		t.Error("Error dumping response:", err)
 	}
 	t.Log(string(b))
 }

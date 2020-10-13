@@ -48,7 +48,7 @@ func CreateCertificate(ctx context.Context, t *testing.T, clients *test.Clients,
 			Name:      name,
 			Namespace: test.ServingNamespace,
 			Annotations: map[string]string{
-				networking.CertificateClassAnnotationKey: test.ServingFlags.CertificateClass,
+				networking.CertificateClassAnnotationKey: test.NetworkingFlags.CertificateClass,
 			},
 		},
 		Spec: v1alpha1.CertificateSpec{
@@ -146,7 +146,7 @@ func VerifyChallenges(ctx context.Context, t *testing.T, client *test.Clients, c
 		}
 		_, err := client.KubeClient.Kube.CoreV1().Services(challenge.ServiceNamespace).Get(ctx, challenge.ServiceName, metav1.GetOptions{})
 		if apierrs.IsNotFound(err) {
-			t.Errorf("failed to find solver service for challenge: %v", err)
+			t.Error("failed to find solver service for challenge:", err)
 		}
 	}
 }
